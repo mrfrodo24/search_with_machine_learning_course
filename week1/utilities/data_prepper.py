@@ -7,7 +7,6 @@ import pandas as pd
 import query_utils as qu
 from opensearchpy import RequestError
 import os
-import json
 
 # from importlib import reload
 
