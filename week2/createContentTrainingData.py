@@ -18,8 +18,6 @@ general = parser.add_argument_group("general")
 general.add_argument("--input", default=directory,  help="The directory containing product data")
 general.add_argument("--output", default="/workspace/datasets/fasttext/output.fasttext", help="the file to output to")
 general.add_argument("--label", default="id", help="id is default and needed for downsteam use, but name is helpful for debugging")
-
-# IMPLEMENT: Setting min_products removes infrequent categories and makes the classifier's task easier.
 general.add_argument("--min_products", default=0, type=int, help="The minimum number of products per category (default is 0).")
 
 args = parser.parse_args()
@@ -31,11 +29,12 @@ if os.path.isdir(output_dir) == False:
 
 if args.input:
     directory = args.input
-# IMPLEMENT: Track the number of items in each category and only output if above the min
-min_products = args.min_products
 names_as_labels = False
 if args.label == 'name':
     names_as_labels = True
+
+min_products = args.min_products
+num_products = {}
 
 def _label_filename(filename):
     tree = ET.parse(filename)
@@ -60,10 +59,19 @@ def _label_filename(filename):
 
 if __name__ == '__main__':
     files = glob.glob(f'{directory}/*.xml')
-    print("Writing results to %s" % output_file)
     with multiprocessing.Pool() as p:
-        all_labels = tqdm(p.imap(_label_filename, files), total=len(files))
-        with open(output_file, 'w') as output:
+        # Double loop not ideal but works...
+        if min_products > 0:
+            print('Checking for categories with minimum number of products...')
+            all_labels = tqdm(p.imap(_label_filename, files), total=len(files))
             for label_list in all_labels:
                 for (cat, name) in label_list:
-                    output.write(f'__label__{cat} {name}\n')
+                    num_products[cat] = 1 + (num_products[cat] if cat in num_products else 0)
+        print("Writing results to %s" % output_file)
+        all_labels = tqdm(p.imap(_label_filename, files), total=len(files))
+        with open(output_file, 'w') as output:
+            # Lazy double loop here, since can't set num_products in _label_filename
+            for label_list in all_labels:
+                for (cat, name) in label_list:
+                    if min_products > 0 and num_products[cat] >= min_products:
+                        output.write(f'__label__{cat} {name}\n')
