@@ -11,12 +11,35 @@ from getpass import getpass
 from urllib.parse import urljoin
 import pandas as pd
 import fileinput
+import re
+import fasttext
+import nltk
 import logging
-
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logging.basicConfig(format='%(levelname)s:%(message)s')
+
+class QueryClassifier:
+    def __init__(self, model_file, score_thresh):
+        self.model = fasttext.load_model(model_file)
+        self.stemmer = nltk.stem.PorterStemmer()
+        self.score_thresh = score_thresh
+    
+    def get_top_categories(self, query):
+        query = query.lower()
+        query = re.sub(r'[^a-z0-9]', ' ', query)
+        query = re.sub(r'\s+', ' ', query)
+        query = ' '.join([self.stemmer.stem(part) for part in query.split(' ')])
+        top_cats = []
+        predictions, scores = self.model.predict(query, k=100)
+        cumulative_score = 0
+        i = 0
+        while i < len(scores) and cumulative_score < self.score_thresh:
+            top_cats.append(predictions[i].removeprefix('__label__'))
+            cumulative_score += scores[i]
+            i += 1
+        return top_cats
 
 # expects clicks and impressions to be in the row
 def create_prior_queries_from_group(
@@ -188,11 +211,15 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
     return query_obj
 
 
-def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", synonyms=False):
-    #### W3: classify the query
-    #### W3: create filters and boosts
-    # Note: you may also want to modify the `create_query` method above
-    query_obj = create_query(user_query, click_prior_query=None, filters=None, sort=sort, sortDir=sortDir, synonyms=synonyms, source=["name", "shortDescription"])
+def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", synonyms=False, query_classifier=None):
+    filters = None
+    if query_classifier is not None:
+        filters = {
+            "terms": {
+                "categoryPathIds": query_classifier.get_top_categories(user_query)
+            }
+        }
+    query_obj = create_query(user_query, click_prior_query=None, filters=filters, sort=sort, sortDir=sortDir, synonyms=synonyms, source=["name", "shortDescription"])
     logging.info(query_obj)
     response = client.search(query_obj, index=index)
     if response and response['hits']['hits'] and len(response['hits']['hits']) > 0:
@@ -217,12 +244,22 @@ if __name__ == "__main__":
     general.add_argument('--synonyms',
                          action='store_true',
                          help='Whether to search on name.synonyms field instead of name')
+    general.add_argument('--query_classifier',
+                         help='The full file path to the trained query-category classifier model')
+    general.add_argument('--query_classifier_score_threshold',
+                         default=0.5,
+                         help='Threshold on score required for query-category classifier prediction. If no single category exceeds threshold, treated as a cumulative score threshold')
 
     args = parser.parse_args()
 
     if len(vars(args)) == 0:
         parser.print_usage()
         exit()
+
+    query_classifier = QueryClassifier(
+        args.query_classifier,
+        args.query_classifier_score_threshold
+    ) if args.query_classifier is not None else None
 
     host = args.host
     port = args.port
@@ -250,7 +287,7 @@ if __name__ == "__main__":
         query = line.rstrip()
         if query == "Exit":
             break
-        search(client=opensearch, user_query=query, index=index_name, synonyms=args.synonyms)
+        search(client=opensearch, user_query=query, index=index_name, synonyms=args.synonyms, query_classifier=query_classifier)
 
         print(query_prompt)
 
