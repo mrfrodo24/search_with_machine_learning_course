@@ -4,10 +4,17 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 import numpy as np
 import csv
+import re
 
 # Useful if you want to perform stemming.
 import nltk
 stemmer = nltk.stem.PorterStemmer()
+
+def normalize_query(query: str):
+    query = query.lower()
+    query = re.sub(r'[^a-z0-9]', ' ', query)
+    query = re.sub(r'\s+', ' ', query)
+    return ' '.join([stemmer.stem(part) for part in query.split(' ')])
 
 categories_file_name = r'/workspace/datasets/product_data/categories/categories_0001_abcat0010000_to_pcmcat99300050000.xml'
 
@@ -48,9 +55,28 @@ parents_df = pd.DataFrame(list(zip(categories, parents)), columns =['category', 
 queries_df = pd.read_csv(queries_file_name)[['category', 'query']]
 queries_df = queries_df[queries_df['category'].isin(categories)]
 
-# IMPLEMENT ME: Convert queries to lowercase, and optionally implement other normalization, like stemming.
+# Normalize queries
+queries_df['query'] = queries_df['query'].apply(lambda query: normalize_query(query))
 
-# IMPLEMENT ME: Roll up categories to ancestors to satisfy the minimum number of queries per category.
+# Prune categories if user defined min_queries above 1
+while min_queries > 1:
+    queries_grouped_df = queries_df.groupby(['category']).size().reset_index(name='count')
+    queries_grouped_df['has_min_queries'] = queries_grouped_df['count'] >= min_queries
+
+    num_categories_to_prune = (~queries_grouped_df['has_min_queries']).sum()
+    if num_categories_to_prune == 0:
+        break
+    else:
+        print(f'Pruning {num_categories_to_prune} categories...')
+
+    queries_grouped_df = queries_grouped_df.merge(parents_df, how='left', on='category')
+    queries_df = queries_df.merge(queries_grouped_df, how='left', on='category')
+
+    queries_df['category'] = queries_df.apply(
+        lambda r: r['category'] if r['has_min_queries'] else r['parent'],
+        axis=1
+    )
+    queries_df = queries_df.drop(columns=['parent', 'count', 'has_min_queries'])
 
 # Create labels in fastText format.
 queries_df['label'] = '__label__' + queries_df['category']
